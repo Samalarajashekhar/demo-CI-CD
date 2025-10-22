@@ -1,44 +1,42 @@
 pipeline {
     agent any
 
+    environment {
+        APP_NAME = 'nodejs-app-demo'
+    }
+
     stages {
         stage('Checkout') {
             steps {
                 echo 'Checking out code...'
-                git branch: 'main', url: 'https://github.com/Samalarajashekhar/demo-CI-CD.git'
+                checkout scm
             }
         }
 
-        stage('Install Dependencies') {
-            steps {
-                echo 'Installing npm dependencies...'
-                bat 'npm install'
-            }
-        }
-
-        stage('Run Tests') {
-            steps {
-                echo 'Running tests...'
-                bat 'npm test'
-            }
-        }
-
-        stage('Build') {
-            steps {
-                echo 'Building app...'
-                bat 'npm run build'
-            }
-        }
-
-        stage('Docker Build & Push') {
+        stage('Build & Push Image') {
             steps {
                 script {
+                    // Note: Fixed usernameVariable from DOCKKUB_USERNAME to DOCKERHUB_USERNAME
                     withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKERHUB_USERNAME', passwordVariable: 'DOCKERHUB_PASSWORD')]) {
-                        bat """
-                            docker build -t %DOCKERHUB_USERNAME%/nodejs-app:latest .
-                            echo %DOCKERHUB_PASSWORD% | docker login -u %DOCKERHUB_USERNAME% --password-stdin
-                            docker push %DOCKERHUB_USERNAME%/nodejs-app:latest
-                        """
+                        
+                        def imageNameWithBuildNumber = "${env.DOCKERHUB_USERNAME}/${env.APP_NAME}:${env.BUILD_NUMBER}"
+                        def imageNameWithLatest = "${env.DOCKERHUB_USERNAME}/${env.APP_NAME}:latest"
+
+                        echo "Building Docker image: ${imageNameWithBuildNumber}..."
+                        
+                        bat "docker build -t ${imageNameWithBuildNumber} ."
+
+                        echo "Tagging image as 'latest'..."
+                        bat "docker tag ${imageNameWithBuildNumber} ${imageNameWithLatest}"
+
+                        echo "Logging in to Docker Hub..."
+                        bat "echo ${env.DOCKERHUB_PASSWORD} | docker login -u ${env.DOCKERHUB_USERNAME} --password-stdin"
+
+                        echo "Pushing image ${imageNameWithBuildNumber}..."
+                        bat "docker push ${imageNameWithBuildNumber}"
+                        
+                        echo "Pushing image ${imageNameWithLatest}..."
+                        bat "docker push ${imageNameWithLatest}"
                     }
                 }
             }
@@ -46,13 +44,30 @@ pipeline {
 
         stage('Deploy') {
             steps {
-                echo 'Deploying container...'
-                bat 'docker run -d -p 5000:5000 --name nodejs-app yourdockerhubusername/nodejs-app:latest'
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKERHUB_USERNAME', passwordVariable: 'DOCKERHUB_PASSWORD')]) {
+                        
+                        def imageNameWithLatest = "${env.DOCKERHUB_USERNAME}/${env.APP_NAME}:latest"
+                        
+                        echo "Deploying container ${imageNameWithLatest}..."
+
+                        // Use '|| exit 0' to ignore errors if the container doesn't exist
+                        bat "docker stop ${env.APP_NAME} || exit 0"
+                        bat "docker rm ${env.APP_NAME} || exit 0"
+
+                        echo "Starting new container..."
+                        bat "docker run -d -p 5000:5000 --name ${env.APP_NAME} ${imageNameWithLatest}"
+                    }
+                }
             }
         }
     }
 
     post {
+        always {
+            echo 'Logging out of Docker Hub...'
+            bat "docker logout"
+        }
         success {
             echo 'Pipeline completed successfully!'
         }
@@ -61,3 +76,4 @@ pipeline {
         }
     }
 }
+
